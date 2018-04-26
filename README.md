@@ -80,3 +80,14 @@ https://developer.nvidia.com/curand
 ## Things to look into....
 
 cudaMemset
+
+# Next Steps...
+[x]. Get main function to obtain generated particles
+
+[x]. Get particles velocity and position to be randomized
+
+[3]. Take into account temperature and average velocity
+
+[4]. Move particles
+
+[5]. Remove them

@@ -1,3 +1,4 @@
+#include <stdio.h>
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -5,16 +6,12 @@
 /* we need these includes for CUDA's random number stuff */
 #include <curand.h>
 #include <curand_kernel.h>
+#include <curand_precalc.h>
 
 /* Personal declarations */
 #include "vect3d.h"
 #include "particle.h"
 
-#include <stdio.h>
-
-cudaError_t inflowPotentialParticles(particle* particleList, int i, int j, int k, int meanParticlePerCell);
-
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 
 // Physical constant describing atom collision size
 const float sigmak = 1e-28; // collision cross section
@@ -22,64 +19,41 @@ const float sigmak = 1e-28; // collision cross section
 // Note, pnum recomputed from mean particle per cell and density
 float pnum = 1e27; // number of particles per simulated particle
 
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
-}
 
-__global__ void inflowKernel(particle *particles)
-{
-	int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	/*particles[idx] = particle(
-		vect3d(blockIdx.x, blockDim.x, threadIdx.x), 
-		vect3d(blockIdx.x, blockDim.x, threadIdx.x)
-	);*/
-	particles[idx].position.x = blockIdx.x;
-	particles[idx].position.y = blockDim.x;
-	particles[idx].position.z = threadIdx.x;
+cudaError_t initializeCuda(curandState_t* states, int blocks);
 
-	particles[idx].velocity.x = blockIdx.x;
-	particles[idx].velocity.y = blockDim.x;
-	particles[idx].velocity.z = threadIdx.x;
+cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle* particleList, int i, int j, int k, int meanParticlePerCell);
 
-	particles[idx].index = 1;
-
-}
-
-cudaError_t initializeCuda()
-{
-	// Choose which GPU to run on, change this on a multi-GPU system.
-	return cudaSetDevice(0);
-}
 
 int main()
 {
-	/*
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
+	int numberOfInflowParticlesEachStep = 1 * 2 * 3 * 4;
 
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
+	curandState_t* dev_randomInflowStates = NULL;
+	
+	cudaError_t cudaStatus = initializeCuda(dev_randomInflowStates, numberOfInflowParticlesEachStep);
 
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
+	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
-	*/
+	inflowPotentialParticles(dev_randomInflowStates, inflowParticleList, 1, 2, 3, 4);
+	
+	for (int i = 0; i < numberOfInflowParticlesEachStep ; ++i)
+	{
+		printf(
+			"[%-2d] vel{ %.3f, %.3f, %.3f }; pos{ %.3f, %.3f, %.3f };\n",
+			i,
+			inflowParticleList[i].velocity.x,
+			inflowParticleList[i].velocity.y,
+			inflowParticleList[i].velocity.z,
+			inflowParticleList[i].position.x,
+			inflowParticleList[i].position.y,
+			inflowParticleList[i].position.z
+		);
+	}
 
-	cudaError_t cudaStatus = initializeCuda();
+	//cudaFree(dev_randomInflowStates);
 
-	particle *particleList = 0;
-	inflowPotentialParticles(particleList, 1, 2, 3, 4);
-
-	printf("I think I completed?");
-	printf("Maybe?");
+	printf("Complete");
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -92,127 +66,103 @@ int main()
     return 0;
 }
 
+/* ============================== INITIALIZE =============================== */
+
+__global__ void initRandomStates(unsigned int seed, curandState_t* states) {
+	//int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	///* we have to initialize the state */
+	//curand_init(0, /* the seed can be the same for each core, here we pass the time in from the CPU */
+	//	idx, /* the sequence number should be different for each core (unless you want all
+	//				cores to get the same sequence of numbers for some reason - use thread id! */
+	//	0, /* the offset is how much extra we advance in the sequence for each call, can be 0 */
+	//	&states[idx]);
+
+	//curand(&states[idx]);
+
+	curandState_t state;
+
+	/* we have to initialize the state */
+	curand_init(seed, /* the seed controls the sequence of random values that are produced */
+		0, /* the sequence number is only important with multiple cores */
+		0, /* the offset is how much extra we advance in the sequence for each call, can be 0 */
+		&state);
+
+	/* curand works like rand - except that it takes a state as a parameter */
+	curand(&state);
+}
+
+cudaError_t initializeCuda(curandState_t *randomInflowStates, int blocks)
+{
+	// Choose which GPU to run on, change this on a multi-GPU system.
+	cudaError_t cudaError = cudaSetDevice(0);
+
+	curandState_t *dev_states;
+
+	//cudaMalloc((void**) &dev_states, blocks * sizeof(curandState_t));
+	//initRandomStates <<<1, blocks>>>(2, dev_states);
+	
+	//printf("%d\n", time(0))
+
+	cudaError = cudaGetLastError();
+	if (cudaError != cudaSuccess) {
+		printf("init launch failed: %s\n", cudaGetErrorString(cudaError));
+		return cudaError;
+	}
+
+	// cudaDeviceSynchronize();
+
+	return cudaError;
+}
+
+/* ================================ INFLOW ================================= */
+
+__global__ void inflowKernel(particle *particles)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	curandState_t state;
+	curand_init(0, /* the seed controls the sequence of random values that are produced */
+		idx, /* the sequence number is only important with multiple cores */
+		0, /* the offset is how much extra we advance in the sequence for each call, can be 0 */
+		&state);
+
+	particles[idx].position.x = curand_uniform(&state);
+	particles[idx].position.y = curand_uniform(&state);
+	particles[idx].position.z = curand_uniform(&state);
+
+	particles[idx].velocity.x = curand_uniform(&state);
+	particles[idx].velocity.y = curand_uniform(&state);
+	particles[idx].velocity.z = curand_uniform(&state);
+
+	particles[idx].index = 1;
+}
+
 /* 
  Fill an array with new random particles to be exeucuted on
+
+ Notes:
+	Do I even need dev_a? Can I just use particle list?
  */
-cudaError_t inflowPotentialParticles(particle *particleList, int i, int j, int k, int meanParticlePerCell) {
-	
+cudaError_t inflowPotentialParticles(curandState_t *randomStates, particle *particleList, int i, int j, int k, int meanParticlePerCell) {
 	int numOfPoints = i*j*k*meanParticlePerCell;
 	int size = numOfPoints * sizeof(particle);
 	particle *dev_a;
-	particle *host_a = (particle*)malloc(size);
 
 	cudaError_t cudaStatus = cudaMalloc((void**)&dev_a, size);
 	if (cudaStatus != cudaSuccess) {
 		return cudaStatus;
 	}
 
-	// Not sure if I have to do this, kinda just want them null right...
-	// Copy empty particle list..
-	/*cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(particle), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-		return cudaStatus;
-	}*/
-
 	inflowKernel <<<1, numOfPoints>>>(dev_a);
+	
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		printf("inflow launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		return cudaStatus;
+	}
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		return cudaStatus;
 	}
-	cudaStatus = cudaMemcpy(host_a, dev_a, size, cudaMemcpyDeviceToHost);
-
-	for (int i = 0; i < numOfPoints; ++i)
-	{
-		printf(
-			"[%d] vel{ %f, %f, %f }\n", 
-			i, 
-			host_a[i].velocity.x, 
-			host_a[i].velocity.y,
-			host_a[i].velocity.z
-		);
-	}
-
-	return cudaStatus;
-
-}
-
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-	int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
-
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
-
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
+	return cudaMemcpy(particleList, dev_a, size, cudaMemcpyDeviceToHost);
 }
