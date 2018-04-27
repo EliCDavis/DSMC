@@ -1,3 +1,4 @@
+#pragma once
 #ifndef VECT3D_H
 #define VECT3D_H
 #include <cmath>

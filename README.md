@@ -2,7 +2,7 @@
 
 *For CSE-8163 Parallel and Distributed Scientific Computing*
 
-Parrallelized version of DSMC program provided By Ed Luke scaled to operate on millions of particles instead of thousands.
+Parrallelized version of DSMC program provided By Ed Luke scaled to operate on millions of particles.
 
 ## Definitions
 

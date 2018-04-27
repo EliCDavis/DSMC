@@ -10,8 +10,9 @@
 /* Personal declarations */
 #include "vect3d.h"
 #include "particle.h"
+#include "cell.h"
 
-// My Card Constants
+// 970 Constraints
 #define MAX_THREAD_PER_BLOCK 1024
 #define MAX_THREAD_PER_PROCESOR 2048
 #define NUM_OF_BLOCKS 64
@@ -38,6 +39,11 @@ cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, fl
 
 particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize);
 
+cudaError_t clearCellInformation(cell* cells, int numCells);
+
+cudaError_t sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells);
+
+
 void printParticle(particle p)
 {
 	printf(
@@ -62,9 +68,21 @@ int main()
 	float deltax = 2. / float(fmax(fmax(cellDimensions.x, cellDimensions.y), cellDimensions.z));
 	float deltaT = .1 * deltax / (vmean + vtemp);
 
+	// simulate for 4 free-stream flow-through times
+	float time = 8. / (vmean + vtemp);
+	int numberOfTimesteps = 1 << int(ceil(log(time / deltaT) / log(2.0)));
+	printf("Time: %.2f; Steps: %d\n", time, numberOfTimesteps);
+
+	// re-sample 4 times during simulation
+	const int sample_reset = numberOfTimesteps / 4;
+	int nsample = 0;
+
 	int numberOfInflowParticlesEachStep = cellDimensions.y * cellDimensions.z * meanParticlePerCell;
 
 	int currentNumberOfParticles = numberOfInflowParticlesEachStep;
+
+	const int numberOfCells = cellDimensions.x * cellDimensions.y * cellDimensions.z;
+	cell* cellSamples = (cell*)malloc(numberOfCells * sizeof(cell));
 
 	curandState_t* dev_randomInflowStates = NULL;
 	
@@ -74,7 +92,7 @@ int main()
 
 	inflowPotentialParticles(inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 
-	for (int t = 0; t < 1000; t ++) {
+	for (int t = 0; t < numberOfTimesteps; t++) {
 		moveAndIndexParticles(inflowParticleList, currentNumberOfParticles, deltaT, cellDimensions);
 
 		// Clean up list of particles out of bounds
@@ -83,7 +101,16 @@ int main()
 		currentNumberOfParticles = newParticleListSize;
 		free(inflowParticleList);
 		inflowParticleList = cleanedParticles;
+
+		if (t % sample_reset == 0)
+		{
+			clearCellInformation(cellSamples, numberOfCells);
+			nsample = 0;
+		}
+		nsample++;
 		
+		sampleCellInformation(inflowParticleList, currentNumberOfParticles, cellSamples, numberOfCells);
+
 		//printParticle(inflowParticleList[0]);
 		printf("[%d] num particles: %d\n", t, currentNumberOfParticles);
 	}
@@ -368,4 +395,98 @@ particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize
 	}
 
 	return newParticleList;
+}
+
+/* ============================== 4. SAMPLING ============================== */
+
+__global__ void clearCellsKernel(cell* cells) {
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	cells[idx].numberOfParticles = 0;
+	cells[idx].velocity.x = 0;
+	cells[idx].velocity.y = 0;
+	cells[idx].velocity.z = 0;
+	cells[idx].energy = 0;
+}
+
+/*
+	TODO:
+		CHECK IF THIS IS ANY BETTER THAN DOING IT LINEARLY
+*/
+cudaError_t	clearCellInformation(cell* cells, int numCells) {
+	int blockSize = numCells / NUM_OF_BLOCKS;
+	cell *deviceCells;
+
+	cudaError_t cudaStatus = cudaMalloc((void**)&deviceCells, numCells * sizeof(cell));
+	if (cudaStatus != cudaSuccess) {
+		return cudaStatus;
+	}
+
+	cudaMemcpy(deviceCells, cells, numCells * sizeof(cell), cudaMemcpyHostToDevice);
+
+	clearCellsKernel <<<NUM_OF_BLOCKS, blockSize>> >(deviceCells);
+
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		return cudaStatus;
+	}
+
+	cudaStatus = cudaMemcpy(cells, deviceCells, numCells * sizeof(cell), cudaMemcpyDeviceToHost);
+
+	cudaFree(deviceCells);
+
+	return cudaStatus;
+}
+
+__global__ void sampleCellsKernel(cell* cells, particle* particles, int particleSize) {
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	for (int particleIndex = 0; particleIndex < particleSize; particleIndex++)
+	{
+		if (particles[particleIndex].index == idx)
+		{
+			cells[idx].numberOfParticles = cells[idx].numberOfParticles + 1;
+			cells[idx].velocity.x = particles[particleIndex].velocity.x + cells[idx].velocity.x;
+			cells[idx].velocity.y = particles[particleIndex].velocity.y + cells[idx].velocity.y;
+			cells[idx].velocity.z = particles[particleIndex].velocity.z + cells[idx].velocity.z;
+			cells[idx].energy = cells[idx].energy + (
+				.5 * 
+				((particles[particleIndex].velocity.x * particles[particleIndex].velocity.x) +
+				(particles[particleIndex].velocity.y * particles[particleIndex].velocity.y) +
+				(particles[particleIndex].velocity.z * particles[particleIndex].velocity.z)));
+		}
+	}
+}
+
+cudaError_t sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells) {
+	int blockSize = numCells / NUM_OF_BLOCKS;
+	cell *deviceCells;
+	particle* deviceParticles;
+
+	cudaError_t cudaStatus = cudaMalloc((void**)&deviceCells, numCells * sizeof(cell));
+	if (cudaStatus != cudaSuccess) {
+		return cudaStatus;
+	}
+
+	cudaStatus = cudaMalloc((void**)&deviceParticles, numOfParticles * sizeof(particle));
+	if (cudaStatus != cudaSuccess) {
+		return cudaStatus;
+	}
+
+	cudaMemcpy(deviceCells, cells, numCells * sizeof(cell), cudaMemcpyHostToDevice);
+	cudaMemcpy(deviceParticles, particles, numOfParticles * sizeof(particle), cudaMemcpyHostToDevice);
+
+
+	sampleCellsKernel <<<NUM_OF_BLOCKS, blockSize>>>(deviceCells, particles, numOfParticles);
+
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		return cudaStatus;
+	}
+
+	cudaStatus = cudaMemcpy(cells, deviceCells, numCells * sizeof(cell), cudaMemcpyDeviceToHost);
+
+	cudaFree(deviceCells);
+	cudaFree(deviceParticles);
+
+	return cudaStatus;
 }
