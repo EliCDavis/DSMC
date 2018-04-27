@@ -86,8 +86,8 @@ cudaMemset
 
 [x]. Get particles velocity and position to be randomized
 
-[3]. Take into account temperature and average velocity
+[x]. Take into account temperature and average velocity
 
-[4]. Move particles
+[x]. Move particles
 
 [5]. Remove them
