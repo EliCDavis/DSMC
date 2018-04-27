@@ -11,18 +11,16 @@
 #include "vect3d.h"
 #include "particle.h"
 
+// My Card Constants
 #define MAX_THREAD_PER_BLOCK 1024
-
 #define MAX_THREAD_PER_PROCESOR 2048
-
 #define NUM_OF_BLOCKS 64
 
 #define CUDART_PI_F 3.141592654f
 
+// Geometry
 #define PLATE_X -0.25
-
 #define PLATE_DY 0.25
-
 #define PLATE_DZ 0.5
 
 // Physical constant describing atom collision size
@@ -37,6 +35,8 @@ cudaError_t initializeCuda(curandState_t* states, int blocks);
 cudaError_t inflowPotentialParticles(particle* particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp);
 
 cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, float deltaTime, vect3d cellDimensions);
+
+particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize);
 
 void printParticle(particle p)
 {
@@ -64,6 +64,8 @@ int main()
 
 	int numberOfInflowParticlesEachStep = cellDimensions.y * cellDimensions.z * meanParticlePerCell;
 
+	int currentNumberOfParticles = numberOfInflowParticlesEachStep;
+
 	curandState_t* dev_randomInflowStates = NULL;
 	
 	cudaError_t cudaStatus = initializeCuda(dev_randomInflowStates, numberOfInflowParticlesEachStep);
@@ -72,12 +74,21 @@ int main()
 
 	inflowPotentialParticles(inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 
-	for (int t = 0; t < 100; t ++) {
-		moveAndIndexParticles(inflowParticleList, numberOfInflowParticlesEachStep, deltaT, cellDimensions);
+	for (int t = 0; t < 1000; t ++) {
+		moveAndIndexParticles(inflowParticleList, currentNumberOfParticles, deltaT, cellDimensions);
+
+		// Clean up list of particles out of bounds
+		int newParticleListSize = 0;
+		particle* cleanedParticles = removeParticlesOutofBounds(inflowParticleList, currentNumberOfParticles, &newParticleListSize);
+		currentNumberOfParticles = newParticleListSize;
+		free(inflowParticleList);
+		inflowParticleList = cleanedParticles;
+		
 		//printParticle(inflowParticleList[0]);
+		printf("[%d] num particles: %d\n", t, currentNumberOfParticles);
 	}
 
-	for (int i = 0; i < numberOfInflowParticlesEachStep ; ++i)
+	for (int i = 0; i < currentNumberOfParticles; ++i)
 	{
 		printf("[%-2d] ", i);
 		printParticle(inflowParticleList[i]);
@@ -335,4 +346,26 @@ cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, fl
 	cudaFree(dev_a);
 
 	return cudaStatus;
+}
+
+/* ========================== 3. REMOVE PARTICLES ========================== */
+
+particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize) {
+	*newSize = size;
+	for (int i = 0; i < size; i++) {
+		if (particles[i].status == -1) {
+			*newSize -= 1;
+		}
+	}
+
+	particle* newParticleList = (particle*)malloc(*newSize * sizeof(particle));
+	int added = 0;
+	for (int i = 0; i < size; i++) {
+		if (particles[i].status != -1) {
+			newParticleList[added] = particle(particles[i]);
+			added += 1;
+		}
+	}
+
+	return newParticleList;
 }
