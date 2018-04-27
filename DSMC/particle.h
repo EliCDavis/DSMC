@@ -8,7 +8,13 @@ struct particle
 	vect3d position, velocity; 
 	
 	// index of containing cell
-	int index;       
+	int index;
+
+	/*
+		-1 - marked for deletion
+		0  - fine
+	*/
+	int status;
 	
 	particle(vect3d pos, vect3d vel) {
 		position = pos;

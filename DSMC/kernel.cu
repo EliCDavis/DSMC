@@ -36,12 +36,13 @@ cudaError_t initializeCuda(curandState_t* states, int blocks);
 
 cudaError_t inflowPotentialParticles(particle* particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp);
 
-cudaError_t moveParticles(particle* particleList, int numOfParticles, float deltaTime);
+cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, float deltaTime, vect3d cellDimensions);
 
 void printParticle(particle p)
 {
 	printf(
-		"vel{ %.3f, %.3f, %.3f }; pos{ %.3f, %.3f, %.3f };\n",
+		"i %d; v{ %.3f, %.3f, %.3f }; p{ %.3f, %.3f, %.3f };\n",
+		p.index,
 		p.velocity.x,
 		p.velocity.y,
 		p.velocity.z,
@@ -71,16 +72,16 @@ int main()
 
 	inflowPotentialParticles(inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 
-	for (int t = 0; t < 10000; t ++) {
-		moveParticles(inflowParticleList, numberOfInflowParticlesEachStep, deltaT);
+	for (int t = 0; t < 100; t ++) {
+		moveAndIndexParticles(inflowParticleList, numberOfInflowParticlesEachStep, deltaT, cellDimensions);
 		//printParticle(inflowParticleList[0]);
 	}
 
-	/*for (int i = 0; i < numberOfInflowParticlesEachStep ; ++i)
+	for (int i = 0; i < numberOfInflowParticlesEachStep ; ++i)
 	{
 		printf("[%-2d] ", i);
 		printParticle(inflowParticleList[i]);
-	}*/
+	}
 
 	// cudaFree(dev_randomInflowStates);
 
@@ -246,7 +247,7 @@ cudaError_t inflowPotentialParticles(particle *particleList, vect3d cellDimensio
 
 /* =========================== 2. MOVE PARTICLES =========================== */
 
-__global__ void moveParticlesKernel(particle* particles, float deltaTime) {
+__global__ void moveParticlesKernel(particle* particles, float deltaTime, vect3d cellDimensions, vect3d dividedCellDimensions) {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 	float newPosX = particles[idx].position.x + (particles[idx].velocity.x * deltaTime);
@@ -284,14 +285,32 @@ __global__ void moveParticlesKernel(particle* particles, float deltaTime) {
 		newPosZ += 2.0;
 	}
 
-	// Assign particle positions
 	particles[idx].position.x = newPosX;
-	particles[idx].position.y = newPosY;
-	particles[idx].position.z = newPosZ;
 
+	// Particle moved out of bounds?
+	if (particles[idx].position.x < -1 || particles[idx].position.x > 1) {
+		// Mark for deletion
+		particles[idx].status = -1;
+	} else {
+		// Assign particle positions and index
+		particles[idx].position.y = newPosY;
+		particles[idx].position.z = newPosZ;
+
+		int i = int(fmin(floor((newPosX + 1.0) / dividedCellDimensions.x), double(cellDimensions.x - 1)));
+		int j = int(fmin(floor((newPosY + 1.0) / dividedCellDimensions.y), double(cellDimensions.y - 1)));
+		int k = int(fmin(floor((newPosZ + 1.0) / dividedCellDimensions.z), double(cellDimensions.z - 1)));
+		particles[idx].index = i * cellDimensions.y * cellDimensions.z + j * cellDimensions.z + k;
+	}
 }
 
-cudaError_t moveParticles(particle* particleList, int numOfParticles, float deltaTime) {
+/*
+	Move particles appropriately and marks those out of bounds with a flag for deletion.
+	Reindexes particles not marked for deletion
+
+	TODO:
+		Some how parrallel sum how many particles now need to be deleted..
+*/
+cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, float deltaTime, vect3d cellDimensions) {
 	int blockSize = numOfParticles / NUM_OF_BLOCKS;
 	particle *dev_a;
 
@@ -302,7 +321,9 @@ cudaError_t moveParticles(particle* particleList, int numOfParticles, float delt
 
 	cudaMemcpy(dev_a, particleList, numOfParticles * sizeof(particle), cudaMemcpyHostToDevice);
 
-	moveParticlesKernel <<<NUM_OF_BLOCKS, blockSize >>>(dev_a, deltaTime);
+	vect3d dividedCellDimensions = vect3d(2. / cellDimensions.x, 2. / cellDimensions.y, 2. / cellDimensions.z);
+
+	moveParticlesKernel <<<NUM_OF_BLOCKS, blockSize >>>(dev_a, deltaTime, cellDimensions, dividedCellDimensions);
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {

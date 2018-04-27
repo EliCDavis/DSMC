@@ -1,5 +1,8 @@
-# Help
-me
+# Direct Simulation Monte Carlo
+
+*For CSE-8163 Parallel and Distributed Scientific Computing*
+
+Parrallelized version of DSMC program provided By Ed Luke scaled to operate on millions of particles instead of thousands.
 
 ## Definitions
 
@@ -76,6 +79,11 @@ __device__ - called from device, runs on device, can't be called from host
 http://cs.umw.edu/~finlayson/class/fall16/cpsc425/notes/cuda-random.html
 
 https://developer.nvidia.com/curand
+
+### Reductions
+
+http://developer.download.nvidia.com/compute/cuda/1.1-Beta/x86_website/projects/reduction/doc/reduction.pdf
+
 
 ## Things to look into....
 
