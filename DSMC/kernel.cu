@@ -146,7 +146,7 @@ int main()
 	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
-	for (int t = 0; t < 500; t++) {
+	for (int t = 0; t < 250; t++) {
 
 		cudaStatus = inflowPotentialParticles(randomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 		if (cudaStatus != cudaSuccess) {
@@ -190,22 +190,10 @@ int main()
 			numberOfCells,
 			deltaT);
 
-		//printParticle(allParticles[0]);
 		printf("[%d] num particles: %d\n", t, currentNumberOfParticles);
-		
 	}
 
 	writeParticles(0, allParticles, currentNumberOfParticles);
-
-	/*for (int i = 0; i < currentNumberOfParticles; ++i)
-	{
-		printf("[%-2d] ", i);
-		printParticle(allParticles[i]);
-	}*/
-
-	// cudaFree(dev_randomInflowStates);
-
-	printf("Complete");
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -214,6 +202,8 @@ int main()
         fprintf(stderr, "cudaDeviceReset failed!");
         return 1;
     }
+
+	printf("Complete");
 
     return 0;
 }
@@ -293,8 +283,9 @@ __global__ void inflowKernel(curandState_t *randState, particle *particles, int 
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-	int cellY = idx % int(dimY);
-	int cellZ = int(floorf(float(idx) / float(dimY)));
+	int k = idx % (dimX* dimY);
+	int cellY = k % int(dimY);
+	int cellZ = int(floorf(float(k) / float(dimY)));
 
 	double dx = 2. / float(dimX);
 	double dy = 2. / float(dimY);
