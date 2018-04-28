@@ -96,7 +96,7 @@ void writeParticles(int step, particle* particles, int num) {
 	ofstream myfile;
 	myfile.open("output.txt");
 	for (int p = 0; p < num; p++) {
-		myfile << particles[p].position.x << " " << particles[p].position.y << " " << particles[p].position.z << endl;
+		myfile << particles[p].position.x << " " << particles[p].position.y << " " << particles[p].position.z << " " << particles[p].status << endl;
 	}
 	myfile.close();
 }
@@ -110,11 +110,13 @@ int main()
 	float vtemp = vmean / Mach;
 	float deltax = 2. / float(fmax(fmax(cellDimensions.x, cellDimensions.y), cellDimensions.z));
 	float deltaT = .1 * deltax / (vmean + vtemp);
+	float density = 1e30; // Number of molecules per unit cube of space
 
 	// simulate for 4 free-stream flow-through times
 	float time = 8. / (vmean + vtemp);
 	int numberOfTimesteps = 1 << int(ceil(log(time / deltaT) / log(2.0)));
 	printf("Time: %.2f; Steps: %d\n", time, numberOfTimesteps);
+
 
 	// re-sample 4 times during simulation
 	const int sample_reset = numberOfTimesteps / 4;
@@ -125,6 +127,9 @@ int main()
 	int currentNumberOfParticles = 0;
 
 	const int numberOfCells = cellDimensions.x * cellDimensions.y * cellDimensions.z;
+	pnum = density * numberOfCells / float(meanParticlePerCell);
+
+
 	cell* cellSamples = (cell*)malloc(numberOfCells * sizeof(cell));
 
 	collisionInfo* collisionData = (collisionInfo*)malloc(numberOfCells * sizeof(collisionInfo));
@@ -141,7 +146,7 @@ int main()
 	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
-	for (int t = 0; t < 1000; t++) {
+	for (int t = 0; t < 500; t++) {
 
 		cudaStatus = inflowPotentialParticles(randomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 		if (cudaStatus != cudaSuccess) {
@@ -390,6 +395,10 @@ cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle *part
 
 /* =========================== 2. MOVE PARTICLES =========================== */
 
+/*
+	TODO:
+		MOVE BRANCHIGN COLLISION LOGIC OUTSIDE OF KERNEL
+*/
 __global__ void moveParticlesKernel(particle* particles, float deltaTime, int dimX, int dimY, int dimZ, float divX, float divY, float divZ) {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -412,6 +421,7 @@ __global__ void moveParticlesKernel(particle* particles, float deltaTime, int di
 		{
 			newPosX = newPosX - 2 * (newPosX - PLATE_X);
 			particles[idx].velocity.x = -particles[idx].velocity.x;
+			particles[idx].status = 1;
 		}
 
 	}
@@ -702,6 +712,7 @@ void collideParticles(
 		// Compute mean and instantaneous particle numbers for the cell
 		float n_mean = float(cellData[i].numberOfParticles) / float(nsample);
 		float n_instant = np[i];
+
 		// Compute a number of particles that need to be selected for
 		// collision tests
 		float select = n_instant * n_mean * pnum * collisionData[i].maxCollisionRate * deltaT / cellvol + collisionData[i].collisionRemainder;
@@ -753,6 +764,8 @@ void collideParticles(
 						pmap[offsets[i] + pt1]->velocity = vcm + 0.5 * vp;
 						pmap[offsets[i] + pt2]->velocity = vcm - 0.5 * vp;
 
+						pmap[offsets[i] + pt1]->status = 2;
+						pmap[offsets[i] + pt2]->status = 2;
 					}
 				}
 				// Update the maximum collision rate to be used in future timesteps

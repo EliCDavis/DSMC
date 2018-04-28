@@ -12,12 +12,16 @@ struct particle
 
 	/*
 		-1 - marked for deletion
-		0  - fine
+		 0 - fine
+		 1 - hit plate
+		 2 - hit particle
 	*/
-	
+	int status;
+
 	particle(vect3d pos, vect3d vel) {
 		position = pos;
 		velocity = vel;
 		index = 0;
+		status = 0;
 	}
 };
