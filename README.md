@@ -31,6 +31,22 @@ Too many blocks is bad. Maxes out graphics card. Find right amount...
 invalid configuration (9)
 Have to break into smaller bits or number of particles is going with cell data is going to max out the card.
 
+### Init random seeds in begining
+
+Super increase
+
+### Control logic is badddd
+
+Note:High Priority: Avoid different execution paths within the same warp.
+
+Flow control instructions (if, switch, do, for, while) can significantly affect the instruction throughput by causing threads of the same warp to diverge; that is, to follow different execution paths. If this happens, the different execution paths must be executed separately; this increases the total number of instructions executed for this warp.
+
+https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#control-flow
+
+### ALWAYS CHECK AFTER EVERY KERNEL EXECUTION
+
+A failed kernel 30 steps back might be causing your issue
+
 ## Steps
 
 ### inflowPotentialParticles
