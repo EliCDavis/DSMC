@@ -11,6 +11,14 @@
 #include "vect3d.h"
 #include "particle.h"
 #include "cell.h"
+#include "collisionInfo.h"
+
+/* From old program */
+#include <list>
+#include <vector>
+#include <stdlib.h>
+#include "vect3d.h"
+
 
 // 970 Constraints
 #define MAX_THREAD_PER_BLOCK 1024
@@ -30,6 +38,7 @@ const float sigmak = 1e-28; // collision cross section
 // Note, pnum recomputed from mean particle per cell and density
 float pnum = 1e27; // number of particles per simulated particle
 
+using namespace std;
 
 cudaError_t initializeCuda(curandState_t* states, int blocks);
 
@@ -43,6 +52,15 @@ cudaError_t clearCellInformation(cell* cells, int numCells);
 
 cudaError_t sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells);
 
+void collideParticles(
+	particle* particleList,
+	int particleListSize,
+	collisionInfo* collisionData,
+	cell* cellData,
+	int cellDataSize,
+	int nsample,
+	float cellvol,
+	float deltaT);
 
 void printParticle(particle p)
 {
@@ -56,6 +74,19 @@ void printParticle(particle p)
 		p.position.y,
 		p.position.z
 	);
+}
+
+float ranf() {
+	return rand() / 32767.0f;
+}
+
+void initializeCollision(collisionInfo *collisionData, int size ,float vtemp)
+{
+	for (int i = 0; i < size; ++i)
+	{
+		collisionData[i].maxCollisionRate = sigmak * vtemp;
+		collisionData[i].collisionRemainder = ranf();
+	}
 }
 
 int main()
@@ -79,28 +110,44 @@ int main()
 
 	int numberOfInflowParticlesEachStep = cellDimensions.y * cellDimensions.z * meanParticlePerCell;
 
-	int currentNumberOfParticles = numberOfInflowParticlesEachStep;
+	int currentNumberOfParticles = 0;
 
 	const int numberOfCells = cellDimensions.x * cellDimensions.y * cellDimensions.z;
 	cell* cellSamples = (cell*)malloc(numberOfCells * sizeof(cell));
+
+	collisionInfo* collisionData = (collisionInfo*)malloc(numberOfCells * sizeof(collisionInfo));
+	initializeCollision(collisionData, numberOfCells, vtemp);
 
 	curandState_t* dev_randomInflowStates = NULL;
 	
 	cudaError_t cudaStatus = initializeCuda(dev_randomInflowStates, numberOfInflowParticlesEachStep);
 
+	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
-	inflowPotentialParticles(inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 
 	for (int t = 0; t < numberOfTimesteps; t++) {
-		moveAndIndexParticles(inflowParticleList, currentNumberOfParticles, deltaT, cellDimensions);
+
+		inflowPotentialParticles(inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
+
+		// Combine new particles with existing
+		particle* newTotal = (particle*)malloc((numberOfInflowParticlesEachStep + currentNumberOfParticles) * sizeof(particle));
+		memcpy(newTotal, inflowParticleList, numberOfInflowParticlesEachStep * sizeof(particle));
+		if (currentNumberOfParticles != 0) {
+			memcpy(newTotal + numberOfInflowParticlesEachStep, allParticles, currentNumberOfParticles * sizeof(particle));
+		}
+		free(allParticles);
+		allParticles = newTotal;
+		currentNumberOfParticles += numberOfInflowParticlesEachStep;
+
+		moveAndIndexParticles(allParticles, currentNumberOfParticles, deltaT, cellDimensions);
 
 		// Clean up list of particles out of bounds
 		int newParticleListSize = 0;
-		particle* cleanedParticles = removeParticlesOutofBounds(inflowParticleList, currentNumberOfParticles, &newParticleListSize);
+		particle* cleanedParticles = removeParticlesOutofBounds(allParticles, currentNumberOfParticles, &newParticleListSize);
 		currentNumberOfParticles = newParticleListSize;
-		free(inflowParticleList);
-		inflowParticleList = cleanedParticles;
+		free(allParticles);
+		allParticles = cleanedParticles;
 
 		if (t % sample_reset == 0)
 		{
@@ -109,16 +156,25 @@ int main()
 		}
 		nsample++;
 		
-		sampleCellInformation(inflowParticleList, currentNumberOfParticles, cellSamples, numberOfCells);
+		sampleCellInformation(allParticles, currentNumberOfParticles, cellSamples, numberOfCells);
 
-		//printParticle(inflowParticleList[0]);
+		collideParticles(allParticles,
+			currentNumberOfParticles,
+			collisionData,
+			cellSamples,
+			numberOfCells,
+			nsample,
+			numberOfCells,
+			deltaT);
+
+		//printParticle(allParticles[0]);
 		printf("[%d] num particles: %d\n", t, currentNumberOfParticles);
 	}
 
 	for (int i = 0; i < currentNumberOfParticles; ++i)
 	{
 		printf("[%-2d] ", i);
-		printParticle(inflowParticleList[i]);
+		printParticle(allParticles[i]);
 	}
 
 	// cudaFree(dev_randomInflowStates);
@@ -281,6 +337,7 @@ cudaError_t inflowPotentialParticles(particle *particleList, vect3d cellDimensio
 
 	return cudaMemcpy(particleList, dev_a, size, cudaMemcpyDeviceToHost);
 }
+
 
 
 /* =========================== 2. MOVE PARTICLES =========================== */
@@ -489,4 +546,129 @@ cudaError_t sampleCellInformation(particle* particles, int numOfParticles, cell*
 	cudaFree(deviceParticles);
 
 	return cudaStatus;
+}
+
+/* ============================ Cell Collision ============================= */
+
+
+
+// Computes a unit vector with a random orientation and uniform distribution
+inline vect3d randomDir()
+{
+	double B = 2. * ranf() - 1;
+	double A = sqrt(1. - B * B);
+	double theta = ranf() * 2 * CUDART_PI_F;
+	return vect3d(B, A * cos(theta), A * sin(theta));
+}
+
+void collideParticles(
+	particle* particleList,
+	int particleListSize,
+	collisionInfo* collisionData,
+	cell* cellData,
+	int cellDataSize,
+	int nsample, 
+	float cellvol, 
+	float deltaT)
+{
+
+	// Compute number of particles per cell and compute a set of pointers
+	// from each cell to the corresponding particles
+	vector<int> np(cellDataSize), cnt(cellDataSize);
+	for (int i = 0; i < cellDataSize; ++i)
+	{
+		np[i] = 0;
+		cnt[i] = 0;
+	}
+
+	for (int p = 0; p < particleListSize; p++)
+	{
+		np[particleList[p].index]++;
+	}
+
+	// Offsets will contain the index in the pmap data structure where
+	// the pointers to particles for the given cell will begin
+	vector<int> offsets(cellDataSize + 1);
+	offsets[0] = 0;
+	for (int i = 0; i < cellDataSize; ++i)
+	{
+		offsets[i + 1] = offsets[i] + np[i];
+	}
+
+	// pmap is a structure of pointers from cells to particles, note
+	// since there may be many particles per cell, the offsets need to
+	// be used to access particles from this data structure.
+	vector<particle *> pmap(offsets[cellDataSize]);
+	for (int p = 0; p < particleListSize; p++)
+	{
+		int i = particleList[p].index;
+		pmap[cnt[i] + offsets[i]] = &(particleList[p]);
+		cnt[i]++;
+	}
+	
+	// Loop over cells and select particles to perform collisions
+	for (int i = 0; i < cellDataSize; ++i)
+	{
+		// Compute mean and instantaneous particle numbers for the cell
+		float n_mean = float(cellData[i].numberOfParticles) / float(nsample);
+		float n_instant = np[i];
+		// Compute a number of particles that need to be selected for
+		// collision tests
+		float select = n_instant * n_mean * pnum * collisionData[i].maxCollisionRate * deltaT / cellvol + collisionData[i].collisionRemainder;
+		// We can only check an integer number of collisions in any timestep
+		int nselect = int(select);
+		// The remainder collision fraction is saved for next timestep
+		collisionData[i].collisionRemainder = select - float(nselect);
+		if (nselect > 0)
+		{ // selected particles for collision
+			if (np[i] < 2)
+			{ // if not enough particles for collision, wait until
+			  // we have enough
+				collisionData[i].collisionRemainder += nselect;
+			}
+			else
+			{
+				// Select nselect particles for possible collision
+				float cmax = collisionData[i].maxCollisionRate;
+				for (int c = 0; c < nselect; ++c)
+				{
+					// select two points in the cell
+					int pt1 = min(int(floor(ranf() * n_instant)), np[i] - 1);
+					int pt2 = min(int(floor(ranf() * n_instant)), np[i] - 1);
+
+					// Make sure they are unique points
+					while (pt1 == pt2)
+						pt2 = min(int(floor(ranf() * n_instant)), np[i] - 1);
+
+					// Compute the relative velocity of two particles
+					vect3d v1 = pmap[offsets[i] + pt1]->velocity;
+					vect3d v2 = pmap[offsets[i] + pt2]->velocity;
+					vect3d vr = v1 - v2;
+					float vrm = norm(vr);
+					// Compute collision  rate for hard sphere model
+					float crate = sigmak * vrm;
+					if (crate > cmax) {
+						cmax = crate;
+					}
+					// Check if these particles actually collide
+					if (ranf() < crate / collisionData[i].maxCollisionRate)
+					{
+						// Collision Accepted, adjust particle velocities
+						// Compute center of mass velocity, vcm
+						vect3d vcm = .5 * (v1 + v2);
+						// Compute random perturbation that conserves momentum
+						vect3d vp = randomDir() * vrm;
+
+						// Adjust particle velocities to reflect collision
+						pmap[offsets[i] + pt1]->velocity = vcm + 0.5 * vp;
+						pmap[offsets[i] + pt2]->velocity = vcm - 0.5 * vp;
+
+					}
+				}
+				// Update the maximum collision rate to be used in future timesteps
+				// for determining number of particles to select.
+				collisionData[i].maxCollisionRate = cmax;
+			}
+		}
+	}
 }

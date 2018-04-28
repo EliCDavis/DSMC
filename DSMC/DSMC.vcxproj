@@ -90,6 +90,7 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cell.h" />
+    <ClInclude Include="collisionInfo.h" />
     <ClInclude Include="particle.h" />
     <ClInclude Include="vect3d.h" />
   </ItemGroup>
