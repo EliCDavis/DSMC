@@ -22,6 +22,15 @@ Parrallelized version of DSMC program provided By Ed Luke scaled to operate on m
 
 Dealing with 406,736 particles
 
+## Findings / Issues Man
+
+### Balance
+Too many blocks is bad. Maxes out graphics card. Find right amount...
+
+### Sampling Cells
+invalid configuration (9)
+Have to break into smaller bits or number of particles is going with cell data is going to max out the card.
+
 ## Steps
 
 ### inflowPotentialParticles

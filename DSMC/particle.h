@@ -14,7 +14,6 @@ struct particle
 		-1 - marked for deletion
 		0  - fine
 	*/
-	int status;
 	
 	particle(vect3d pos, vect3d vel) {
 		position = pos;
