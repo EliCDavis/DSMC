@@ -13,11 +13,6 @@
 #include "cell.h"
 #include "collisionInfo.h"
 
-/* From old program */
-#include <list>
-#include <vector>
-#include <stdlib.h>
-#include "vect3d.h"
 
 #include <iostream>
 #include <fstream>
@@ -505,8 +500,11 @@ particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize
 
 /* ============================== 4. SAMPLING ============================== */
 
-__global__ void clearCellsKernel(cell* cells) {
+__global__ void clearCellsKernel(cell* cells, int numCells) {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= numCells) {
+		return;
+	}
 	cells[idx].numberOfParticles = 0;
 	cells[idx].velocity.x = 0;
 	cells[idx].velocity.y = 0;
@@ -519,7 +517,7 @@ __global__ void clearCellsKernel(cell* cells) {
 		CHECK IF THIS IS ANY BETTER THAN DOING IT LINEARLY
 */
 cudaError_t	clearCellInformation(cell* cells, int numCells) {
-	int blockSize = numCells / NUM_OF_BLOCKS;
+	int numberOfBlocks = ceil(double(numCells) / double(MAX_THREAD_PER_BLOCK));
 	cell *deviceCells;
 
 	cudaError_t cudaStatus = cudaMalloc((void**)&deviceCells, numCells * sizeof(cell));
@@ -529,7 +527,7 @@ cudaError_t	clearCellInformation(cell* cells, int numCells) {
 
 	cudaMemcpy(deviceCells, cells, numCells * sizeof(cell), cudaMemcpyHostToDevice);
 
-	clearCellsKernel <<<NUM_OF_BLOCKS, blockSize>>>(deviceCells);
+	clearCellsKernel <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(deviceCells, numCells);
 
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
@@ -664,7 +662,8 @@ void collideParticles(
 
 	// Compute number of particles per cell and compute a set of pointers
 	// from each cell to the corresponding particles
-	vector<int> np(cellDataSize), cnt(cellDataSize);
+	int* np = (int*)malloc(cellDataSize * sizeof(int));
+	int* cnt = (int*)malloc(cellDataSize * sizeof(int));
 	for (int i = 0; i < cellDataSize; ++i)
 	{
 		np[i] = 0;
@@ -678,7 +677,7 @@ void collideParticles(
 
 	// Offsets will contain the index in the pmap data structure where
 	// the pointers to particles for the given cell will begin
-	vector<int> offsets(cellDataSize + 1);
+	int* offsets = (int*)malloc((cellDataSize + 1) * sizeof(int));
 	offsets[0] = 0;
 	for (int i = 0; i < cellDataSize; ++i)
 	{
@@ -688,7 +687,7 @@ void collideParticles(
 	// pmap is a structure of pointers from cells to particles, note
 	// since there may be many particles per cell, the offsets need to
 	// be used to access particles from this data structure.
-	vector<particle *> pmap(offsets[cellDataSize]);
+	particle** pmap = (particle**)malloc(offsets[cellDataSize] * sizeof(particle*));
 	for (int p = 0; p < particleListSize; p++)
 	{
 		int i = particleList[p].index;
@@ -696,6 +695,8 @@ void collideParticles(
 		cnt[i]++;
 	}
 	
+	free(cnt);
+
 	// Loop over cells and select particles to perform collisions
 	for (int i = 0; i < cellDataSize; ++i)
 	{
@@ -764,4 +765,7 @@ void collideParticles(
 			}
 		}
 	}
+	free(pmap);
+	free(np);
+	free(offsets);
 }
