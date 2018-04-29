@@ -38,7 +38,7 @@ float pnum = 1e27; // number of particles per simulated particle
 using namespace std;
 
 
-cudaError_t initializeCuda(curandState_t* states, int blocks);
+cudaError_t initializeCuda(curandState_t** states, int blocks);
 
 cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle* particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp);
 
@@ -138,10 +138,13 @@ int main()
 	collisionInfo* collisionData = (collisionInfo*)malloc(numberOfCells * sizeof(collisionInfo));
 	initializeCollision(collisionData, numberOfCells, vtemp);
 
-	curandState_t* randomInflowStates = (curandState_t*)malloc(numberOfInflowParticlesEachStep * sizeof(curandState_t));
+	curandState_t* deviceRandomInflowStates = NULL;
 	
-	cudaError_t cudaStatus = initializeCuda(randomInflowStates, numberOfInflowParticlesEachStep);
-
+	cudaError_t cudaStatus = initializeCuda(&deviceRandomInflowStates, numberOfInflowParticlesEachStep);
+	if (cudaStatus != cudaSuccess) {
+		printf("init kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		return 1;
+	}
 
 	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
@@ -150,7 +153,7 @@ int main()
 
 	for (int t = 0; t < numberOfTimesteps; t++) {
 
-		cudaStatus = inflowPotentialParticles(randomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
+		cudaStatus = inflowPotentialParticles(deviceRandomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 		if (cudaStatus != cudaSuccess) {
 			printf("inflow failed: %s\n", cudaGetErrorString(cudaStatus));
 			return 1;
@@ -226,7 +229,7 @@ __global__ void initRandomStates(unsigned int seed, curandState_t* states) {
 		&states[idx]);
 }
 
-cudaError_t initializeCuda(curandState_t *randomInflowStates, int numOfStates)
+cudaError_t initializeCuda(curandState_t **randomInflowStates, int numOfStates)
 {
 	int blockSize = numOfStates / NUM_OF_BLOCKS;
 
@@ -243,19 +246,9 @@ cudaError_t initializeCuda(curandState_t *randomInflowStates, int numOfStates)
 
 	initRandomStates <<<NUM_OF_BLOCKS, blockSize >>>(2, dev_states);
 	
-	cudaError = cudaGetLastError();
-	if (cudaError != cudaSuccess) {
-		printf("init launch failed: %s\n", cudaGetErrorString(cudaError));
-		return cudaError;
-	}
+	*randomInflowStates = dev_states;
 
-	cudaError = cudaMemcpy(randomInflowStates, dev_states, numOfStates * sizeof(curandState_t), cudaMemcpyDeviceToHost);
-	if (cudaError != cudaSuccess) {
-		printf("inti memcpy failed: %s\n", cudaGetErrorString(cudaError));
-		return cudaError;
-	}
-
-	return cudaFree(dev_states);
+	return cudaGetLastError();
 }
 
 /* ================================ HELPERS ================================ */
@@ -321,35 +314,22 @@ __global__ void inflowKernel(int numOfParticles, curandState_t *randState, parti
 	Stress test number of particles
 
  */
-cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle *particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp) {
+cudaError_t inflowPotentialParticles(curandState_t* deviceRandomStates, particle *particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp) {
 	
 	int numOfPoints = cellDimensions.y * cellDimensions.z * meanParticlePerCell;
 
 	int numberOfBlocks = ceil(double(numOfPoints) / double(MAX_THREAD_PER_BLOCK));
 
 	int size = numOfPoints * sizeof(particle);
-	
-	curandState_t *dev_randomStates;
-	cudaError_t cudaStatus = cudaMalloc((void**)&dev_randomStates, numOfPoints * sizeof(curandState_t));
-	if (cudaStatus != cudaSuccess) {
-		printf("inflow malloc failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-
-	cudaMemcpy(dev_randomStates, randomStates, numOfPoints * sizeof(curandState_t), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-		printf("inflow memcpy failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
 
 	particle *dev_a;
-	cudaStatus = cudaMalloc((void**)&dev_a, size);
+	cudaError_t cudaStatus = cudaMalloc((void**)&dev_a, size);
 	if (cudaStatus != cudaSuccess) {
 		printf("inflow malloc failed: %s\n", cudaGetErrorString(cudaStatus));
 		return cudaStatus;
 	}
 
-	inflowKernel <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(numOfPoints, dev_randomStates, dev_a, cellDimensions.x, cellDimensions.y, cellDimensions.z, vmean, vtemp);
+	inflowKernel <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(numOfPoints, deviceRandomStates, dev_a, cellDimensions.x, cellDimensions.y, cellDimensions.z, vmean, vtemp);
 	
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
@@ -357,21 +337,9 @@ cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle *part
 		return cudaStatus;
 	}
 
-	cudaStatus = cudaMemcpy(randomStates, dev_randomStates, size, cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess) {
-		printf("inflow memcpy failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-
 	cudaStatus = cudaMemcpy(particleList, dev_a, size, cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		printf("inflow memcpy failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-
-	cudaStatus = cudaFree(dev_randomStates);
-	if (cudaStatus != cudaSuccess) {
-		printf("inflow free rnd failed: %s\n", cudaGetErrorString(cudaStatus));
 		return cudaStatus;
 	}
 
