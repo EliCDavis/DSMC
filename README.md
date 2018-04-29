@@ -26,6 +26,7 @@ Dealing with 406,736 particles
 
 ### Balance
 Too many blocks is bad. Maxes out graphics card. Find right amount...
+Max out amount of allowed threads per block, minimize number of blocks needed
 
 ### Sampling Cells
 invalid configuration (9)
