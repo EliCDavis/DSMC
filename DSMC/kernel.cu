@@ -44,11 +44,11 @@ cudaError_t inflowPotentialParticles(curandState_t* randomStates, particle* part
 
 cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, float deltaTime, vect3d cellDimensions, vect3d dividedCellDimensions);
 
-particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize);
+particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize, cell* cells, int numberOfCells, particle*** outMap);
 
 cudaError_t clearCellInformation(cell* cells, int numCells);
 
-void sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells);
+void sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells, particle*** cellToParticleMap);
 
 void collideParticles(
 	particle* particleList,
@@ -58,7 +58,8 @@ void collideParticles(
 	int cellDataSize,
 	int nsample,
 	float cellvol,
-	float deltaT);
+	float deltaT,
+	particle*** cellToParticleMap);
 
 void printParticle(particle p)
 {
@@ -100,7 +101,7 @@ void writeParticles(int step, particle* particles, int num) {
 int main()
 {
 	int meanParticlePerCell = 10;
-	vect3d cellDimensions = vect3d(32, 32, 32);
+	vect3d cellDimensions = vect3d(128, 128, 128);
 	vect3d dividedCellDimensions = vect3d(2. / cellDimensions.x, 2. / cellDimensions.y, 2. / cellDimensions.z);
 	float vmean = 1;
 	float Mach = 20;
@@ -128,6 +129,11 @@ int main()
 
 
 	cell* cellSamples = (cell*)malloc(numberOfCells * sizeof(cell));
+	
+	// TODO TRY IN KERNEL AND MONITOR FOR PERFORMANCE IMPROVEMENT
+	//for (int c = 0; c < numberOfCells; c++) {
+	//	cellSamples[c].currentNumberOfParticles = 0;
+	//}
 
 	collisionInfo* collisionData = (collisionInfo*)malloc(numberOfCells * sizeof(collisionInfo));
 	initializeCollision(collisionData, numberOfCells, vtemp);
@@ -143,9 +149,15 @@ int main()
 	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
+	particle*** cellToParticlesMap = NULL;
+
 	clock_t clockTime;
 
-	for (int t = 0; t < 250; t++) {
+	for (int t = 0; t < numberOfTimesteps/4; t++) {
+
+		if (t == 11) {
+			printf("im about to die");
+		}
 
 		cudaStatus = inflowPotentialParticles(randomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 		if (cudaStatus != cudaSuccess) {
@@ -164,12 +176,21 @@ int main()
 
 		moveAndIndexParticles(allParticles, currentNumberOfParticles, deltaT, cellDimensions, dividedCellDimensions);
 
-		// Clean up list of particles out of bounds
+		// Clean up list of particles out of bounds and recompute cell map
+		particle*** newCellMap = (particle***)malloc(numberOfCells * sizeof(particle**));
 		int newParticleListSize = 0;
-		particle* cleanedParticles = removeParticlesOutofBounds(allParticles, currentNumberOfParticles, &newParticleListSize);
+		particle* cleanedParticles = removeParticlesOutofBounds(allParticles, currentNumberOfParticles, &newParticleListSize, cellSamples, numberOfCells, newCellMap);
 		currentNumberOfParticles = newParticleListSize;
 		free(allParticles);
 		allParticles = cleanedParticles;
+
+		if (cellToParticlesMap != NULL) {
+			for (int c = 0; c < numberOfCells; c++) {
+				free(cellToParticlesMap[c]);
+			}
+			free(cellToParticlesMap);
+		}
+		cellToParticlesMap = newCellMap;
 
 		if (t % sample_reset == 0)
 		{
@@ -178,7 +199,7 @@ int main()
 		}
 		nsample++;
 		
-		sampleCellInformation(allParticles, currentNumberOfParticles, cellSamples, numberOfCells);
+		sampleCellInformation(allParticles, currentNumberOfParticles, cellSamples, numberOfCells, cellToParticlesMap);
 
 		clockTime = clock();
 
@@ -189,7 +210,8 @@ int main()
 			numberOfCells,
 			nsample,
 			numberOfCells,
-			deltaT);
+			deltaT,
+			cellToParticlesMap);
 
 		clockTime = clock() - clockTime;
 		printf("[%d] time: %f to collide ", t, ((double)clockTime) / CLOCKS_PER_SEC);
@@ -478,22 +500,43 @@ cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, fl
 
 /* ========================== 3. REMOVE PARTICLES ========================== */
 
-particle* removeParticlesOutofBounds(particle* particles, int size, int* newSize) {
-	*newSize = size;
-	for (int i = 0; i < size; i++) {
+particle* removeParticlesOutofBounds(particle* particles, int originalParticleSize, int* newSize, cell* cells, int numberOfCells, particle*** outMap) {
+	
+	int* cellParticleCount = (int*)malloc(numberOfCells * sizeof(int));
+	for (int i = 0; i < numberOfCells; i ++) {
+		cellParticleCount[i] = 0;
+ 	}
+	
+	*newSize = originalParticleSize;
+
+	for (int i = 0; i < originalParticleSize; i++) {
 		if (particles[i].position.x < -1 || particles[i].position.x > 1) {
 			*newSize -= 1;
 		}
+		else {
+			cellParticleCount[particles[i].index] += 1;
+		}
+	}
+
+	for (int i = 0; i < numberOfCells; i ++) {
+		cells[i].currentNumberOfParticles = 0;
+		outMap[i] = (particle**)malloc(cellParticleCount[i] * sizeof(particle*));
 	}
 
 	particle* newParticleList = (particle*)malloc(*newSize * sizeof(particle));
 	int added = 0;
-	for (int i = 0; i < size; i++) {
+	for (int i = 0; i < originalParticleSize; i++) {
 		if (particles[i].position.x >= -1 && particles[i].position.x <= 1) {
 			newParticleList[added] = particle(particles[i]);
+			int cellIndex = newParticleList[added].index;
+			outMap[cellIndex][cells[cellIndex].currentNumberOfParticles] = &newParticleList[added];
+			//outMap[newParticleList[added].index][cells[i].currentNumberOfParticles];
 			added += 1;
+			cells[cellIndex].currentNumberOfParticles += 1;
 		}
 	}
+
+	free(cellParticleCount);
 
 	return newParticleList;
 }
@@ -529,19 +572,17 @@ cudaError_t	clearCellInformation(cell* cells, int numCells) {
 
 	clearCellsKernel <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(deviceCells, numCells);
 
-	cudaStatus = cudaDeviceSynchronize();
+	cudaStatus = cudaMemcpy(cells, deviceCells, numCells * sizeof(cell), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		return cudaStatus;
 	}
-
-	cudaStatus = cudaMemcpy(cells, deviceCells, numCells * sizeof(cell), cudaMemcpyDeviceToHost);
 
 	cudaFree(deviceCells);
 
 	return cudaStatus;
 }
 
-__global__ void sampleCellsKernel(cell* cells, particle* particles, int particleSize) {
+__global__ void sampleCellsKernel(cell* cells, int cellSize, particle* particles, int particleSize, particle*** cellToParticleMap) {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 	for (int particleIndex = 0; particleIndex < particleSize; particleIndex++)
@@ -561,14 +602,61 @@ __global__ void sampleCellsKernel(cell* cells, particle* particles, int particle
 	}
 }
 
-void sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells) {
+void sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells, particle*** cellToParticleMap) {
+	
 	for (int p = 0; p < numOfParticles; p++) {
 		int cellIndex = particles[p].index;
 		cells[cellIndex].numberOfParticles++;
 		cells[cellIndex].velocity += particles[p].velocity;
 		cells[cellIndex].energy += .5* dot(particles[p].velocity, particles[p].velocity);
-
 	}
+
+	//int numberOfBlocks = ceil(double(numCells) / double(MAX_THREAD_PER_BLOCK));
+	//
+	//cell *deviceCells;
+	//particle *deviceParticles;
+	//particle*** deviceCellToParticleMap;
+
+	//cudaError_t cudaStatus = cudaMalloc((void**)&deviceCells, numCells * sizeof(cell));
+	//if (cudaStatus != cudaSuccess) {
+	//	printf("sample malloc cells failed: %s\n", cudaGetErrorString(cudaStatus));
+	//	return cudaStatus;
+	//}
+
+	//cudaError_t cudaStatus = cudaMalloc((void**)&deviceParticles, numOfParticles * sizeof(particle));
+	//if (cudaStatus != cudaSuccess) {
+	//	printf("sample malloc particles failed: %s\n", cudaGetErrorString(cudaStatus));
+	//	return cudaStatus;
+	//}
+
+	//cudaError_t cudaStatus = cudaMemcpy(deviceCells, cells, numCells * sizeof(cell), cudaMemcpyHostToDevice);
+	//if (cudaStatus != cudaSuccess) {
+	//	printf("sample memcpy cells failed: %s\n", cudaGetErrorString(cudaStatus));
+	//	return cudaStatus;
+	//}
+
+	//cudaError_t cudaStatus = cudaMemcpy(deviceParticles, particles, numOfParticles * sizeof(particle), cudaMemcpyHostToDevice);
+	//if (cudaStatus != cudaSuccess) {
+	//	printf("sample memcpy particles failed: %s\n", cudaGetErrorString(cudaStatus));
+	//	return cudaStatus;
+	//}
+
+	//sampleCellsKernel <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(deviceCells, numCells, deviceParticles, particleSize, deviceCellToParticleMap);
+
+	//cudaStatus = cudaGetLastError();
+	//if (cudaStatus != cudaSuccess) {
+	//	printf("sample memcpy to host failed: %s\n", cudaGetErrorString(cudaStatus));
+	//	return cudaStatus;
+	//}
+
+	//cudaStatus = cudaMemcpy(cells, deviceCells, numCells * sizeof(cell), cudaMemcpyDeviceToHost);
+
+	//cudaFree(deviceCells);
+
+	//cudaFree(deviceParticles);
+
+	//return cudaStatus;
+
 }
 
 //cudaError_t sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells) {
@@ -638,6 +726,27 @@ void sampleCellInformation(particle* particles, int numOfParticles, cell* cells,
 
 /* ============================ Cell Collision ============================= */
 
+__global__ void preCollisionKernel(cell* cells, collisionInfo* collisionData, int cellSize, float nSample, float deltaT, float cellVol, float moleculesPerParticle) {
+
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= cellSize) {
+		return;
+	}
+
+	// Compute mean and instantaneous particle numbers for the cell
+	float n_mean = float(cells[idx].numberOfParticles) / float(nSample);
+	float n_instant = cells[idx].currentNumberOfParticles;
+
+	// Compute a number of particles that need to be selected for collision tests
+	float select = n_instant * n_mean * moleculesPerParticle * collisionData[idx].maxCollisionRate * deltaT / cellVol + collisionData[idx].collisionRemainder;
+	
+	// We can only check an integer number of collisions in any timestep
+	collisionData[idx].nSelect = int(select);
+
+	// The remainder collision fraction is saved for next timestep
+	collisionData[idx].collisionRemainder = select - float(collisionData[idx].nSelect);
+
+}
 
 
 // Computes a unit vector with a random orientation and uniform distribution
@@ -657,93 +766,91 @@ void collideParticles(
 	int cellDataSize,
 	int nsample, 
 	float cellvol, 
-	float deltaT)
+	float deltaT,
+	particle*** cellToParticleMap)
 {
 
-	// Compute number of particles per cell and compute a set of pointers
-	// from each cell to the corresponding particles
-	int* np = (int*)malloc(cellDataSize * sizeof(int));
-	int* cnt = (int*)malloc(cellDataSize * sizeof(int));
-	for (int i = 0; i < cellDataSize; ++i)
-	{
-		np[i] = 0;
-		cnt[i] = 0;
+	cell* deviceCellData;
+	collisionInfo* deviceCollisionData;
+
+	cudaError_t cudaStatus = cudaMalloc((void**)&deviceCellData, cellDataSize * sizeof(cell));
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol malloc failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
 	}
 
-	for (int p = 0; p < particleListSize; p++)
-	{
-		np[particleList[p].index]++;
+	cudaStatus = cudaMalloc((void**)&deviceCollisionData, cellDataSize * sizeof(collisionInfo));
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol malloc failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
 	}
 
-	// Offsets will contain the index in the pmap data structure where
-	// the pointers to particles for the given cell will begin
-	int* offsets = (int*)malloc((cellDataSize + 1) * sizeof(int));
-	offsets[0] = 0;
-	for (int i = 0; i < cellDataSize; ++i)
-	{
-		offsets[i + 1] = offsets[i] + np[i];
+	cudaStatus = cudaMemcpy(deviceCellData, cellData, cellDataSize * sizeof(cell), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol memcpy to device failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
 	}
 
-	// pmap is a structure of pointers from cells to particles, note
-	// since there may be many particles per cell, the offsets need to
-	// be used to access particles from this data structure.
-	particle** pmap = (particle**)malloc(offsets[cellDataSize] * sizeof(particle*));
-	for (int p = 0; p < particleListSize; p++)
-	{
-		int i = particleList[p].index;
-		pmap[cnt[i] + offsets[i]] = &(particleList[p]);
-		cnt[i]++;
+	cudaStatus = cudaMemcpy(deviceCollisionData, collisionData, cellDataSize * sizeof(collisionInfo), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol memcpy to device failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
 	}
+
+	int numberOfBlocks = ceil(double(cellDataSize) / double(MAX_THREAD_PER_BLOCK));
+
+	preCollisionKernel<<<numberOfBlocks , MAX_THREAD_PER_BLOCK >>>(deviceCellData, deviceCollisionData, cellDataSize, nsample, deltaT, cellvol, pnum);
 	
-	free(cnt);
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
+	}
+
+	cudaStatus = cudaMemcpy(collisionData, deviceCollisionData, cellDataSize * sizeof(collisionInfo), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol memcpy to host failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
+	}
 
 	// Loop over cells and select particles to perform collisions
-	for (int i = 0; i < cellDataSize; ++i)
+	for (int cellIndex = 0; cellIndex < cellDataSize; ++cellIndex)
 	{
-		// Compute mean and instantaneous particle numbers for the cell
-		float n_mean = float(cellData[i].numberOfParticles) / float(nsample);
-		float n_instant = np[i];
-
-		// Compute a number of particles that need to be selected for
-		// collision tests
-		float select = n_instant * n_mean * pnum * collisionData[i].maxCollisionRate * deltaT / cellvol + collisionData[i].collisionRemainder;
-		// We can only check an integer number of collisions in any timestep
-		int nselect = int(select);
-		// The remainder collision fraction is saved for next timestep
-		collisionData[i].collisionRemainder = select - float(nselect);
-		if (nselect > 0)
+		if (collisionData[cellIndex].nSelect > 0)
 		{ // selected particles for collision
-			if (np[i] < 2)
+			if (cellData[cellIndex].currentNumberOfParticles < 2)
 			{ // if not enough particles for collision, wait until
 			  // we have enough
-				collisionData[i].collisionRemainder += nselect;
+				collisionData[cellIndex].collisionRemainder += collisionData[cellIndex].nSelect;
 			}
 			else
 			{
 				// Select nselect particles for possible collision
-				float cmax = collisionData[i].maxCollisionRate;
-				for (int c = 0; c < nselect; ++c)
+				float cmax = collisionData[cellIndex].maxCollisionRate;
+				for (int c = 0; c < collisionData[cellIndex].nSelect; ++c)
 				{
 					// select two points in the cell
-					int pt1 = min(int(floor(ranf() * n_instant)), np[i] - 1);
-					int pt2 = min(int(floor(ranf() * n_instant)), np[i] - 1);
+					int pt1 = min(int(floor(ranf() * cellData[cellIndex].currentNumberOfParticles)), cellData[cellIndex].currentNumberOfParticles - 1);
+					int pt2 = min(int(floor(ranf() * cellData[cellIndex].currentNumberOfParticles)), cellData[cellIndex].currentNumberOfParticles - 1);
 
 					// Make sure they are unique points
-					while (pt1 == pt2)
-						pt2 = min(int(floor(ranf() * n_instant)), np[i] - 1);
-
+					while (pt1 == pt2) {
+						pt2 = min(int(floor(ranf() * cellData[cellIndex].currentNumberOfParticles)), cellData[cellIndex].currentNumberOfParticles - 1);
+					}
 					// Compute the relative velocity of two particles
-					vect3d v1 = pmap[offsets[i] + pt1]->velocity;
-					vect3d v2 = pmap[offsets[i] + pt2]->velocity;
+					vect3d v1 = cellToParticleMap[cellIndex][pt1]->velocity;
+					vect3d v2 = cellToParticleMap[cellIndex][pt2]->velocity;
 					vect3d vr = v1 - v2;
 					float vrm = norm(vr);
+
 					// Compute collision  rate for hard sphere model
 					float crate = sigmak * vrm;
 					if (crate > cmax) {
 						cmax = crate;
 					}
+					
 					// Check if these particles actually collide
-					if (ranf() < crate / collisionData[i].maxCollisionRate)
+					if (ranf() < crate / collisionData[cellIndex].maxCollisionRate)
 					{
 						// Collision Accepted, adjust particle velocities
 						// Compute center of mass velocity, vcm
@@ -752,20 +859,32 @@ void collideParticles(
 						vect3d vp = randomDir() * vrm;
 
 						// Adjust particle velocities to reflect collision
-						pmap[offsets[i] + pt1]->velocity = vcm + 0.5 * vp;
-						pmap[offsets[i] + pt2]->velocity = vcm - 0.5 * vp;
+						cellToParticleMap[cellIndex][pt1]->velocity = vcm + 0.5 * vp;
+						cellToParticleMap[cellIndex][pt2]->velocity = vcm - 0.5 * vp;
 
-						pmap[offsets[i] + pt1]->status = 2;
-						pmap[offsets[i] + pt2]->status = 2;
+						cellToParticleMap[cellIndex][pt1]->status = 2;
+						cellToParticleMap[cellIndex][pt2]->status = 2;
 					}
 				}
 				// Update the maximum collision rate to be used in future timesteps
 				// for determining number of particles to select.
-				collisionData[i].maxCollisionRate = cmax;
+				collisionData[cellIndex].maxCollisionRate = cmax;
 			}
 		}
+	
 	}
-	free(pmap);
-	free(np);
-	free(offsets);
+
+
+	cudaStatus = cudaFree(deviceCellData);
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol free cell failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
+	}
+
+	cudaStatus = cudaFree(deviceCollisionData);
+	if (cudaStatus != cudaSuccess) {
+		printf("Pcol free cell failed: %s\n", cudaGetErrorString(cudaStatus));
+		return;
+	}
+
 }

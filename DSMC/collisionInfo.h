@@ -9,4 +9,7 @@ struct collisionInfo
 	// Non-integral fraction of collisions that remain to be performed
 	// and are carried over into the next timestep
 	float collisionRemainder;
+
+	// Number of collisions at current time step
+	int nSelect;
 };

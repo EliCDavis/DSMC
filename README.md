@@ -27,10 +27,10 @@ Dealing with 406,736 particles
 ### Balance
 Too many blocks is bad. Maxes out graphics card. Find right amount...
 Max out amount of allowed threads per block, minimize number of blocks needed
-
-### Sampling Cells
-invalid configuration (9)
-Have to break into smaller bits or number of particles is going with cell data is going to max out the card.
+DO:
+	<<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>
+DONT:
+	<<<NUM_OF_BLOCKS, blockSize >>>
 
 ### Init random seeds in begining
 
@@ -47,6 +47,19 @@ https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#control-flow
 ### ALWAYS CHECK AFTER EVERY KERNEL EXECUTION
 
 A failed kernel 30 steps back might be causing your issue
+
+### Remove vectors
+
+They suck holy shit. Great reduction in execution time, also no scales a lot better as number of particles increase
+
+
+### Can't Do nested arrays in cuda
+
+https://stackoverflow.com/questions/6137218/how-can-i-add-up-two-2d-pitched-arrays-using-nested-for-loops
+
+### Should have done spatial subdivision
+
+http://developer.download.nvidia.com/assets/cuda/files/particles.pdf
 
 ## Steps
 
@@ -111,17 +124,6 @@ https://developer.nvidia.com/curand
 http://developer.download.nvidia.com/compute/cuda/1.1-Beta/x86_website/projects/reduction/doc/reduction.pdf
 
 
-## Things to look into....
+## TODO
 
-cudaMemset
-
-# Next Steps...
-[x]. Get main function to obtain generated particles
-
-[x]. Get particles velocity and position to be randomized
-
-[x]. Take into account temperature and average velocity
-
-[x]. Move particles
-
-[5]. Remove them
+Combine collision info with cell.
