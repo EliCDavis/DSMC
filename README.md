@@ -61,6 +61,10 @@ https://stackoverflow.com/questions/6137218/how-can-i-add-up-two-2d-pitched-arra
 
 http://developer.download.nvidia.com/assets/cuda/files/particles.pdf
 
+### Batch Random Numbers
+
+Another super increase. Do best figuring out how many random numbers going to need in advance and generate them.
+
 ## Steps
 
 ### inflowPotentialParticles

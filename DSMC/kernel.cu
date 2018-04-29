@@ -134,10 +134,6 @@ int main()
 
 	cell* cellSamples = (cell*)malloc(numberOfCells * sizeof(cell));
 	
-	// TODO TRY IN KERNEL AND MONITOR FOR PERFORMANCE IMPROVEMENT
-	//for (int c = 0; c < numberOfCells; c++) {
-	//	cellSamples[c].currentNumberOfParticles = 0;
-	//}
 
 	collisionInfo* collisionData = (collisionInfo*)malloc(numberOfCells * sizeof(collisionInfo));
 	initializeCollision(collisionData, numberOfCells, vtemp);
@@ -152,7 +148,7 @@ int main()
 
 	clock_t clockTime;
 
-	for (int t = 0; t < numberOfTimesteps/2; t++) {
+	for (int t = 0; t < numberOfTimesteps; t++) {
 
 		cudaStatus = inflowPotentialParticles(randomInflowStates, inflowParticleList, cellDimensions, meanParticlePerCell, vmean, vtemp);
 		if (cudaStatus != cudaSuccess) {
@@ -405,25 +401,22 @@ __global__ void moveParticlesKernel(int* deviceDeletionCount, particle* particle
 	float newPosY = particles[idx].position.y + (particles[idx].velocity.y * deltaTime);
 	float newPosZ = particles[idx].position.z + (particles[idx].velocity.z * deltaTime);
 
-	// May have passed through the plate..
-	if ((particles[idx].position.x < PLATE_X && newPosX > PLATE_X) ||
-		(particles[idx].position.x > PLATE_X && newPosX < PLATE_X)) {
 
-		// Where did it actually pass through the plate..
-		double t = (particles[idx].position.x - PLATE_X) / (particles[idx].position.x - newPosX);
-		float pointOfCollisionY = (particles[idx].position.y * (1.0 - t)) + (newPosY * t);
-		float pointOfCollisionZ = (particles[idx].position.z * (1.0 - t)) + (newPosZ * t);
+	// Where did it actually pass through the plate..
+	double t = (particles[idx].position.x - PLATE_X) / (particles[idx].position.x - newPosX);
+	float pointOfCollisionY = (particles[idx].position.y * (1.0 - t)) + (newPosY * t);
+	float pointOfCollisionZ = (particles[idx].position.z * (1.0 - t)) + (newPosZ * t);
 
-		// Actually collided..
-		if ((pointOfCollisionY < PLATE_DY && pointOfCollisionY > -PLATE_DY) &&
-			(pointOfCollisionZ < PLATE_DZ && pointOfCollisionZ > -PLATE_DZ))
-		{
-			newPosX = newPosX - 2 * (newPosX - PLATE_X);
-			particles[idx].velocity.x = -particles[idx].velocity.x;
-			particles[idx].status = 1;
-		}
-
+	// Actually collided..
+	if (((particles[idx].position.x < PLATE_X && newPosX > PLATE_X) ||
+		(particles[idx].position.x > PLATE_X && newPosX < PLATE_X)) && (pointOfCollisionY < PLATE_DY && pointOfCollisionY > -PLATE_DY) &&
+		(pointOfCollisionZ < PLATE_DZ && pointOfCollisionZ > -PLATE_DZ))
+	{
+		newPosX = newPosX - 2 * (newPosX - PLATE_X);
+		particles[idx].velocity.x = -particles[idx].velocity.x;
+		particles[idx].status = 1;
 	}
+
 
 	newPosY = newPosY + (2.0 * ((newPosY < -1) - (newPosY > 1)));
 	newPosZ = newPosZ + (2.0 * ((newPosZ < -1) - (newPosZ > 1)));
