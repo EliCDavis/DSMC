@@ -18,10 +18,6 @@ Parrallelized version of DSMC program provided By Ed Luke scaled to operate on m
 
 **Kernel** - function that runs on the device
 
-## Stats
-
-Dealing with 406,736 particles
-
 ## Findings / Issues Man
 
 ### Balance
