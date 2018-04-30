@@ -203,7 +203,6 @@ int main()
 		
 		sampleCellInformation(allParticles, currentNumberOfParticles, deviceCellSamples, numberOfCells, deviceCellSteals, deviceContentsChanged);
 
-
 		collideParticles(allParticles,
 			currentNumberOfParticles,
 			collisionData,
@@ -354,14 +353,6 @@ __global__ void inflowKernel(int numOfParticles, curandState_t *randState, parti
 
 /* 
  Fill an array with new random particles to be exeucuted on
-
- Notes:
-	Do I even need dev_a? Can I just use particle list?
- 
- TODO:
-	figure out how to build random seeds in seperate block
-	Stress test number of particles
-
  */
 cudaError_t inflowPotentialParticles(curandState_t* deviceRandomStates, particle *particleList, vect3d cellDimensions, int meanParticlePerCell, float vmean, float vtemp) {
 	
@@ -399,10 +390,6 @@ cudaError_t inflowPotentialParticles(curandState_t* deviceRandomStates, particle
 
 /* =========================== 2. MOVE PARTICLES =========================== */
 
-/*
-	TODO:
-		MOVE BRANCHIGN COLLISION LOGIC OUTSIDE OF KERNEL
-*/
 __global__ void moveParticlesKernel(int* deviceDeletionCount, particle* particles, int numParticles, float deltaTime, int dimX, int dimY, int dimZ, float divX, float divY, float divZ) {
 	
 	extern __shared__ int sdata[];
@@ -471,9 +458,6 @@ __global__ void moveParticlesKernel(int* deviceDeletionCount, particle* particle
 /*
 	Move particles appropriately and marks those out of bounds with a flag for deletion.
 	Reindexes particles not marked for deletion
-
-	TODO:
-		Some how parrallel sum how many particles now need to be deleted..
 */
 cudaError_t moveAndIndexParticles(particle* particleList, int numOfParticles, float deltaTime, vect3d cellDimensions, vect3d dividedCellDimensions, int* numToDelete) {
 	int numberOfBlocks = ceil(double(numOfParticles) / double(MAX_THREAD_PER_BLOCK));
