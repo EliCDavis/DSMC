@@ -50,6 +50,93 @@ cudaError_t clearCellInformation(cell* cells, int numCells);
 
 void sampleCellInformation(particle* particles, int numOfParticles, cell* cells, int numCells, int* cellSteal, bool* thingsHaveChanged);
 
+__device__ void swapParticles(particle* p1, particle* p2) {
+	int tempIndex = p1->index;
+	bool tempHitParticle = p1->hitParticle;
+	bool tempHitPlate = p1->hitPlate;
+	bool tempDelete = p1->deleteMe;
+	
+	float tempVelX = p1->velocity.x;
+	float tempVelY = p1->velocity.y;
+	float tempVelZ = p1->velocity.z;
+	
+	float tempPosX = p1->position.x;
+	float tempPosY = p1->position.y;
+	float tempPosZ = p1->position.z;
+	
+	p1->index = p2->index;
+	p1->hitParticle = p2->hitParticle;
+	p1->hitPlate = p2->hitPlate;
+	p1->deleteMe = p2->deleteMe;
+
+	p1->velocity.x = p2->velocity.x;
+	p1->velocity.y = p2->velocity.y;
+	p1->velocity.z = p2->velocity.z;
+
+	p1->position.x = p2->position.x;
+	p1->position.y = p2->position.y;
+	p1->position.z = p2->position.z;
+
+	p2->index = tempIndex;
+	p2->hitParticle = tempHitParticle;
+	p2->hitPlate = tempHitPlate;
+	p2->deleteMe = tempDelete;
+
+	p2->velocity.x = tempVelX;
+	p2->velocity.y = tempVelY;
+	p2->velocity.z = tempVelZ;
+
+	p2->position.x = tempPosX;
+	p2->position.y = tempPosY;
+	p2->position.z = tempPosZ;
+}
+
+__global__ void bitonic_sort_step(particle *dev_values, int j, int k, int numParticles)
+{
+	unsigned int i, ixj; /* Sorting partners: i and ixj */
+	i = blockDim.x * blockIdx.x + threadIdx.x;
+	ixj = i^j;
+	
+	if (i >= numParticles || ixj >= numParticles) {
+		return;
+	}
+
+	/* The threads with the lowest ids sort the array. */
+	if ((ixj)>i) {
+		if (((i&k) == 0 && dev_values[i].index > dev_values[ixj].index) || (((i&k) != 0) && dev_values[i].index < dev_values[ixj].index)) {
+			swapParticles(&dev_values[i], &dev_values[ixj]);
+		}
+	}
+}
+
+/**
+* Inplace bitonic sort using CUDA.
+*/
+void bitonic_sort_particles(particle *values, int numParticles)
+{
+	cudaError_t status;
+	int numberOfBlocks = ceil(double(numParticles) / double(MAX_THREAD_PER_BLOCK));
+
+	particle *dev_values;
+	size_t size = numParticles * sizeof(particle);
+
+	status = cudaMalloc((void**)&dev_values, size);
+	status = cudaMemcpy(dev_values, values, size, cudaMemcpyHostToDevice);
+
+	int j, k;
+	/* Major step */
+	for (k = 2; k <= numParticles; k <<= 1) {
+		/* Minor step */
+		for (j = k >> 1; j>0; j = j >> 1) {
+			bitonic_sort_step <<<numberOfBlocks, MAX_THREAD_PER_BLOCK >>>(dev_values, j, k, numParticles);
+			status = cudaGetLastError();
+		}
+	}
+	status = cudaMemcpy(values, dev_values, size, cudaMemcpyDeviceToHost);
+	status = cudaFree(dev_values);
+}
+
+
 void collideParticles(
 	particle* particleList,
 	int particleListSize,
@@ -150,6 +237,8 @@ int main()
 	particle *allParticles = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 	particle *inflowParticleList = (particle*)malloc(numberOfInflowParticlesEachStep * sizeof(particle));
 
+	clock_t totalTime;
+
 	clock_t clockTime;
 
 	int* deviceCellSteals;
@@ -165,7 +254,7 @@ int main()
 		printf("sample malloc failed: %s\n", cudaGetErrorString(cudaStatus));
 		return;
 	}
-
+	totalTime = clock();
 	for (int t = 0; t < numberOfTimesteps; t++) {
 
 		clockTime = clock();
@@ -201,6 +290,10 @@ int main()
 		}
 		nsample++;
 		
+		if (t % 37 == 0) {
+			bitonic_sort_particles(allParticles, currentNumberOfParticles);
+		}
+
 		sampleCellInformation(allParticles, currentNumberOfParticles, deviceCellSamples, numberOfCells, deviceCellSteals, deviceContentsChanged);
 
 		collideParticles(allParticles,
@@ -216,6 +309,8 @@ int main()
 		clockTime = clock() - clockTime;
 		printf("%d %f %d\n", t, ((double)clockTime) / CLOCKS_PER_SEC, currentNumberOfParticles);
 	}
+
+	printf("Total Time: %f", ((double)clock() - totalTime) / CLOCKS_PER_SEC);
 
 	writeParticles(0, allParticles, currentNumberOfParticles);
 
