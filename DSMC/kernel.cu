@@ -739,6 +739,7 @@ void sampleCellInformation(particle* particles, int numOfParticles, cell* device
 	}
 
 	bool thingsChanged = true;
+	int times = 0;
 	while (thingsChanged) {
 		sameplCellStealKernel <<<numberOfBlocksForParticles, MAX_THREAD_PER_BLOCK>>>(deviceParticles, numOfParticles, deviceCellsStolen, deviceParticleSuccessStolen, deviceThingsChanged);
 		cudaStatus = cudaGetLastError();
@@ -754,13 +755,16 @@ void sampleCellInformation(particle* particles, int numOfParticles, cell* device
 			return;
 		}
 
-		cudaStatus = cudaMemcpy(&thingsChanged, deviceThingsChanged, sizeof(bool), cudaMemcpyDeviceToHost);
-		if (cudaStatus != cudaSuccess) {
-			printf("sample copy failed: %s\n", cudaGetErrorString(cudaStatus));
-			return;
+		if (times >= 3) {
+			cudaStatus = cudaMemcpy(&thingsChanged, deviceThingsChanged, sizeof(bool), cudaMemcpyDeviceToHost);
+			if (cudaStatus != cudaSuccess) {
+				printf("sample copy failed: %s\n", cudaGetErrorString(cudaStatus));
+				return;
+			}
+			times = 0;
 		}
+		times++;
 	}
-	
 
 	cudaStatus = cudaFree(deviceParticles);
 	if (cudaStatus != cudaSuccess) {
