@@ -808,6 +808,9 @@ __global__ void preCollisionKernel(cell* cells, collisionInfo* collisionData, in
 	collisionData[idx].collisionRemainder = select - float(collisionData[idx].nSelect);
 
 	sdata[threadIdx.x] = collisionData[idx].nSelect * (n_instant >= 2) * 5;
+
+	collisionData[idx].collisionRemainder += collisionData[idx].nSelect * (n_instant < 2);
+
 	__syncthreads();
 
 	for (unsigned int s = blockDim.x / 2; s>0; s >>= 1) {
@@ -944,12 +947,7 @@ void collideParticles(
 	{
 		if (collisionData[cellIndex].nSelect > 0)
 		{ // selected particles for collision
-			if (np[cellIndex] < 2)
-			{ // if not enough particles for collision, wait until
-			  // we have enough
-				collisionData[cellIndex].collisionRemainder += collisionData[cellIndex].nSelect;
-			}
-			else
+			if (np[cellIndex] > 1)
 			{
 				// Select nselect particles for possible collision
 				float cmax = collisionData[cellIndex].maxCollisionRate;
